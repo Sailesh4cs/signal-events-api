@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signal Events Dashboard</title>
+<style nonce="{{NONCE}}">
+  :root { --bg:#0b1020; --panel:#151c2f; --line:#273150; --muted:#8b97b5; --text:#e6e9f2; --accent:#a78bfa; --accent2:#22d3ee; --bad:#f87171; --ok:#4ade80; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+  h1 { margin:0; font-size:20px; } h2 { font-size:15px; margin:0 0 10px; color:var(--muted); font-weight:600; }
+  main { padding:20px 24px; display:grid; gap:20px; max-width:1200px; margin:0 auto; }
+  .grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:20px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .card, section { background:var(--panel); border-radius:10px; padding:14px 16px; }
+  .card .v { font-size:24px; font-weight:700; } .card .l { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:end; }
+  label { display:grid; gap:3px; font-size:12px; color:var(--muted); }
+  input, select, button, textarea { font:inherit; padding:6px 8px; border-radius:6px; border:1px solid #3a4568; background:var(--bg); color:var(--text); }
+  textarea { width:100%; min-height:60px; font-family:ui-monospace,Consolas,monospace; font-size:12px; }
+  button { cursor:pointer; background:#6d28d9; border-color:#6d28d9; } button.secondary { background:transparent; }
+  table { width:100%; border-collapse:collapse; } th, td { text-align:left; padding:6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12px; } td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .chart svg { width:100%; height:220px; display:block; } .chart rect.bar { fill:var(--accent); } .chart rect.bar:hover { fill:var(--accent2); }
+  .chart text { fill:var(--muted); font-size:10px; } .chart line { stroke:var(--line); }
+  .msg { min-height:20px; } .msg.err { color:var(--bad); } .msg.ok { color:var(--ok); }
+  .muted { color:var(--muted); } code { font-size:12px; color:var(--accent2); }
+  .big { font-size:32px; font-weight:700; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Signal Events</h1>
+  <div class="row">
+    <label>Range<select id="preset"><option value="24h">Last 24 hours (hourly)</option><option value="7d" selected>Last 7 days</option><option value="30d">Last 30 days</option><option value="custom">Custom dates</option></select></label>
+    <label>From<input type="date" id="from" disabled></label>
+    <label>To<input type="date" id="to" disabled></label>
+    <label>Event<select id="name"><option value="">all events</option></select></label>
+    <button id="apply" type="button">Apply</button>
+  </div>
+</header>
+<main>
+  <div class="msg" id="msg" role="status"></div>
+  <div class="cards" id="cards"></div>
+  <section><h2 id="chart-title">Events over time</h2><div class="chart" id="chart"></div></section>
+  <div class="grid2">
+    <section><h2>Events by name</h2><table><thead><tr><th>Event</th><th>Count</th><th>Users</th><th>Σ value</th></tr></thead><tbody id="by-name"></tbody></table></section>
+    <section>
+      <h2>Named aggregations</h2>
+      <div class="row"><label>Aggregation<select id="agg"></select></label><button id="run" type="button">Run</button><button id="del" type="button" class="secondary">Delete</button></div>
+      <p class="muted" id="agg-desc"></p>
+      <div id="agg-result"></div>
+    </section>
+  </div>
+  <div class="grid2">
+    <section>
+      <h2>Define aggregation</h2>
+      <form id="agg-form" class="row">
+        <label>Name<input name="name" required pattern="[a-z][a-z0-9\-]{1,49}" placeholder="revenue-by-plan"></label>
+        <label>Metric<select name="metric"><option>count</option><option>unique_users</option><option>sum</option><option>avg</option><option>min</option><option>max</option></select></label>
+        <label>Event filter<input name="eventName" placeholder="(all)"></label>
+        <label>Group by<input name="groupBy" placeholder="day | name | property.plan"></label>
+        <label>Description<input name="description" maxlength="200"></label>
+        <button type="submit">Save</button>
+      </form>
+    </section>
+    <section>
+      <h2>Send test event</h2>
+      <form id="event-form">
+        <div class="row">
+          <label>Name<input name="name" required value="page.view"></label>
+          <label>User<input name="userId" placeholder="u-123"></label>
+          <label>Value<input name="value" type="number" step="any"></label>
+        </div>
+        <label>Properties (JSON object)<textarea name="properties">{"path": "/pricing"}</textarea></label>
+        <button type="submit">Ingest</button>
+      </form>
+    </section>
+  </div>
+  <section><h2>Recent events</h2><table><thead><tr><th>Time (UTC)</th><th>Event</th><th>User</th><th>Value</th><th>Properties</th></tr></thead><tbody id="recent"></tbody></table></section>
+</main>
+<script nonce="{{NONCE}}">
+"use strict";
+const $ = (id) => document.getElementById(id);
+const SVG = "http://www.w3.org/2000/svg";
+const el = (tag, props = {}, children = []) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) { if (k === "text") n.textContent = v; else if (k === "class") n.className = v; else n.setAttribute(k, v); }
+  n.append(...children); return n;
+};
+const svgEl = (tag, attrs = {}, text) => { const n = document.createElementNS(SVG, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v)); if (text !== undefined) n.textContent = text; return n; };
+const fmt = (v) => v === null || v === undefined ? "—" : typeof v === "number" ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(v);
+let aggregations = [];
+
+function flash(text, ok) { const m = $("msg"); m.textContent = text; m.className = "msg " + (ok ? "ok" : "err"); if (ok) setTimeout(() => { if (m.textContent === text) m.textContent = ""; }, 3000); }
+async function api(path, options = {}) {
+  const res = await fetch(path, { ...options, headers: options.body ? { "Content-Type": "application/json" } : {} });
+  if (res.status === 204) return null;
+  const body = await res.json();
+  if (!res.ok) {
+    const d = Array.isArray(body.error.details) ? " (" + body.error.details.map((x) => `${x.field}: ${x.message}`).join("; ") + ")" : "";
+    throw new Error(body.error.message + d);
+  }
+  return body;
+}
+
+function rangeParams() {
+  const p = new URLSearchParams();
+  const preset = $("preset").value;
+  if (preset === "custom") { if ($("from").value) p.set("from", $("from").value); if ($("to").value) p.set("to", $("to").value); }
+  else { const ms = { "24h": 864e5, "7d": 7 * 864e5, "30d": 30 * 864e5 }[preset]; const now = Date.now(); p.set("from", new Date(now - ms).toISOString()); p.set("to", new Date(now + 1000).toISOString()); }
+  return p;
+}
+
+function drawChart(container, points) {
+  const W = 900, H = 220, L = 40, B = 28, T = 10;
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "bar chart" });
+  const max = Math.max(1, ...points.map((p) => p.value || 0));
+  for (let i = 0; i <= 4; i++) {
+    const y = T + (H - B - T) * (1 - i / 4);
+    svg.append(svgEl("line", { x1: L, x2: W, y1: y, y2: y }), svgEl("text", { x: L - 4, y: y + 3, "text-anchor": "end" }, fmt(Math.round(max * i / 4 * 100) / 100)));
+  }
+  const bw = (W - L) / Math.max(points.length, 1);
+  const every = Math.ceil(points.length / 12);
+  points.forEach((p, i) => {
+    const h = ((p.value || 0) / max) * (H - B - T);
+    const r = svgEl("rect", { class: "bar", x: L + i * bw + bw * 0.1, y: H - B - h, width: Math.max(bw * 0.8, 1), height: h });
+    r.append(svgEl("title", {}, `${p.label}: ${fmt(p.value)}`));
+    svg.append(r);
+    if (i % every === 0) svg.append(svgEl("text", { x: L + i * bw + bw / 2, y: H - 10, "text-anchor": "middle" }, p.short));
+  });
+  container.replaceChildren(points.length ? svg : el("p", { class: "muted", text: "No data in range" }));
+}
+const shortLabel = (iso, interval) => interval === "hour" ? iso.slice(11, 16) : iso.slice(5, 10);
+
+async function loadReports() {
+  const p = rangeParams();
+  const name = $("name").value; if (name) p.set("name", name);
+  const tp = new URLSearchParams(p); tp.set("interval", $("preset").value === "24h" ? "hour" : "day");
+  const [summary, series, recent] = await Promise.all([
+    api("/api/reports/summary?" + p), api("/api/reports/timeseries?" + tp), api("/api/events?limit=20&" + p),
+  ]);
+  const s = summary.data;
+  $("cards").replaceChildren(...[["Events", s.totalEvents], ["Unique users", s.uniqueUsers], ["Σ value", s.totalValue], ["Event types", s.byName.length]]
+    .map(([l, v]) => el("div", { class: "card" }, [el("div", { class: "v", text: fmt(v) }), el("div", { class: "l", text: l })])));
+  $("chart-title").textContent = `Events per ${series.data.interval}${name ? " — " + name : ""} (${s.range.from.slice(0, 16)} → ${s.range.to.slice(0, 16)} UTC)`;
+  drawChart($("chart"), series.data.buckets.map((b) => ({ label: b.start, short: shortLabel(b.start, series.data.interval), value: b.count })));
+  $("by-name").replaceChildren(...s.byName.map((r) => el("tr", {}, [el("td", { text: r.name }), el("td", { class: "num", text: fmt(r.count) }), el("td", { class: "num", text: fmt(r.uniqueUsers) }), el("td", { class: "num", text: fmt(r.sumValue) })])));
+  if (!name) {
+    const sel = $("name"); const keep = sel.value;
+    sel.replaceChildren(el("option", { value: "", text: "all events" }), ...s.byName.map((r) => el("option", { value: r.name, text: r.name })));
+    sel.value = keep;
+  }
+  $("recent").replaceChildren(...recent.data.map((e) => el("tr", {}, [
+    el("td", { text: e.timestamp.replace("T", " ").slice(0, 19) }), el("td", { text: e.name }), el("td", { text: e.userId || "—" }),
+    el("td", { class: "num", text: fmt(e.value) }), el("td", {}, [el("code", { text: JSON.stringify(e.properties) })]),
+  ])));
+}
+
+async function loadAggregations(select) {
+  aggregations = (await api("/api/aggregations")).data;
+  $("agg").replaceChildren(...aggregations.map((a) => el("option", { value: a.name, text: a.name })));
+  if (select) $("agg").value = select;
+  describeAgg();
+}
+function describeAgg() {
+  const a = aggregations.find((x) => x.name === $("agg").value);
+  $("agg-desc").textContent = a ? `${a.metric}${a.eventName ? " of " + a.eventName : " of all events"}${a.groupBy ? " grouped by " + a.groupBy : ""}${a.description ? " — " + a.description : ""}` : "No aggregations defined";
+}
+async function runAgg() {
+  const name = $("agg").value; if (!name) return;
+  try {
+    const { data } = await api(`/api/aggregations/${encodeURIComponent(name)}/run?` + rangeParams());
+    const out = $("agg-result"), r = data.result, g = data.aggregation.groupBy;
+    if (!r.groups) out.replaceChildren(el("div", { class: "big", text: fmt(r.value) }), el("div", { class: "muted", text: `${r.events} matching events` }));
+    else if (g === "hour" || g === "day") { const c = el("div", { class: "chart" }); drawChart(c, r.groups.map((x) => ({ label: x.key, short: shortLabel(x.key, g), value: x.value }))); out.replaceChildren(c); }
+    else out.replaceChildren(el("table", {}, [el("thead", {}, [el("tr", {}, [el("th", { text: g }), el("th", { text: data.aggregation.metric }), el("th", { text: "events" })])]),
+      el("tbody", {}, r.groups.map((x) => el("tr", {}, [el("td", { text: x.key }), el("td", { class: "num", text: fmt(x.value) }), el("td", { class: "num", text: fmt(x.events) })])))]));
+  } catch (e) { flash(e.message, false); }
+}
+
+async function refresh() { try { await loadReports(); await runAgg(); } catch (e) { flash(e.message, false); } }
+
+$("preset").addEventListener("change", () => { const c = $("preset").value === "custom"; $("from").disabled = !c; $("to").disabled = !c; if (!c) refresh(); });
+$("apply").addEventListener("click", refresh);
+$("name").addEventListener("change", refresh);
+$("agg").addEventListener("change", () => { describeAgg(); runAgg(); });
+$("run").addEventListener("click", runAgg);
+$("del").addEventListener("click", async () => {
+  const name = $("agg").value; if (!name || !confirm(`Delete aggregation ${name}?`)) return;
+  try { await api(`/api/aggregations/${encodeURIComponent(name)}`, { method: "DELETE" }); flash("Aggregation deleted", true); await loadAggregations(); runAgg(); } catch (e) { flash(e.message, false); }
+});
+$("agg-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const body = { name: f.get("name"), metric: f.get("metric") };
+  for (const k of ["eventName", "groupBy", "description"]) if (f.get(k).trim()) body[k] = f.get(k).trim();
+  try { await api("/api/aggregations", { method: "POST", body: JSON.stringify(body) }); ev.target.reset(); flash("Aggregation saved", true); await loadAggregations(body.name); runAgg(); } catch (e) { flash(e.message, false); }
+});
+$("event-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const body = { name: f.get("name").trim() };
+  if (f.get("userId").trim()) body.userId = f.get("userId").trim();
+  if (f.get("value") !== "") body.value = Number(f.get("value"));
+  const props = f.get("properties").trim();
+  if (props) { try { body.properties = JSON.parse(props); } catch { return flash("Properties must be valid JSON", false); } }
+  try { const r = await api("/api/events", { method: "POST", body: JSON.stringify(body) }); flash(`Ingested ${r.data.accepted} event`, true); refresh(); } catch (e) { flash(e.message, false); }
+});
+
+(async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  $("to").value = today; $("from").value = new Date(Date.now() - 6 * 864e5).toISOString().slice(0, 10);
+  try { await loadAggregations(); } catch (e) { flash(e.message, false); }
+  refresh();
+})();
+</script>
+</body>
+</html>
